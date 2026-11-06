@@ -10,37 +10,49 @@ type Props = {
   rows?: number;
   autoStartKey?: string;
   readBack?: boolean;
-  /** called with each raw final phrase (used for guided/rating parsing) */
-  onPhrase?: (t: string) => void;
 };
 
-export default function VoiceBox({ value, onChange, format, placeholder, rows = 4, readBack, onPhrase }: Props) {
+export default function VoiceBox({ value, onChange, format, placeholder, rows = 4, readBack }: Props) {
   const [interim, setInterim] = useState("");
-  const buffer = useRef("");
+  // what was already in the box when this recording started; the recording text is added on top, never appended repeatedly
+  const base = useRef("");
+  const lastText = useRef("");
+  const committed = useRef(true);
   const valueRef = useRef(value);
   useEffect(() => {
     valueRef.current = value;
   });
 
-  const { listening, error, start, stop } = useDictation(
-    (t) => {
-      if (!t) return;
-      onPhrase?.(t);
-      if (format) {
-        buffer.current = (buffer.current + " " + t).trim();
-        onChange(formatSpoken(format, buffer.current));
-      } else {
-        const cur = valueRef.current;
-        onChange(cur ? cur.replace(/\s+$/, "") + " " + t : t.charAt(0).toUpperCase() + t.slice(1));
+  const { listening, error, start, stop } = useDictation((text, final) => {
+    const commit = (t: string) => {
+      setInterim("");
+      committed.current = true;
+      if (format) onChange(formatSpoken(format, t));
+      else {
+        const b = base.current.replace(/\s+$/, "");
+        onChange(b ? b + " " + t : t.charAt(0).toUpperCase() + t.slice(1));
       }
-    },
-    setInterim,
-  );
+    };
+    if (!text) {
+      // recording ended: if the last words were never marked final, keep them anyway
+      if (lastText.current && !committed.current) commit(lastText.current);
+      setInterim("");
+      return;
+    }
+    lastText.current = text;
+    if (!final) {
+      committed.current = false;
+      setInterim(text);
+      return;
+    }
+    commit(text);
+  });
 
   const toggle = () => {
     if (listening) stop();
     else {
-      buffer.current = "";
+      base.current = valueRef.current;
+      lastText.current = "";
       start();
     }
   };
@@ -59,7 +71,7 @@ export default function VoiceBox({ value, onChange, format, placeholder, rows = 
         )}
       </div>
       <textarea
-        value={value + (interim ? (value ? " " : "") + interim : "")}
+        value={value + (interim && !format ? (value ? " " : "") + interim : "")}
         onChange={(e) => onChange(e.target.value)}
         rows={format ? 1 : rows}
         placeholder={placeholder ?? "Your answer appears here. You can also type or edit."}

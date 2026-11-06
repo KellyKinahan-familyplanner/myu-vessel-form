@@ -30,16 +30,20 @@ export function stopSpeaking() {
   if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
 }
 
-/** Push-to-toggle dictation. onFinal gets each finalised phrase. */
-export function useDictation(onFinal: (text: string) => void, onInterim?: (text: string) => void) {
+const isAndroid = () => typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
+
+/**
+ * Push-to-toggle dictation.
+ * onText receives the WHOLE transcript of the current recording each time it changes (replace, never append),
+ * so a browser that re-sends partial results can't make words repeat.
+ */
+export function useDictation(onText: (text: string, final: boolean) => void) {
   const [listening, setListening] = useState(false);
   const [error, setError] = useState("");
   const recRef = useRef<Rec>(null);
-  const finalRef = useRef(onFinal);
-  const interimRef = useRef(onInterim);
+  const textRef = useRef(onText);
   useEffect(() => {
-    finalRef.current = onFinal;
-    interimRef.current = onInterim;
+    textRef.current = onText;
   });
 
   const stop = useCallback(() => {
@@ -58,18 +62,20 @@ export function useDictation(onFinal: (text: string) => void, onInterim?: (text:
     }
     stopSpeaking();
     setError("");
+    const android = isAndroid();
     const rec: Rec = new SR();
     rec.lang = "en-AU";
-    rec.continuous = true;
-    rec.interimResults = true;
+    // Android Chrome re-sends cumulative partial results in continuous mode, which is what repeats words.
+    rec.continuous = !android;
+    rec.interimResults = !android;
+    rec.maxAlternatives = 1;
     rec.onresult = (e: any) => {
-      let interim = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) finalRef.current(r[0].transcript.trim());
-        else interim += r[0].transcript;
-      }
-      interimRef.current?.(interim);
+      const results = Array.from(e.results as ArrayLike<any>);
+      // Android: only the latest result holds the full phrase. Elsewhere: results are consecutive phrases.
+      const used = android ? results.slice(-1) : results;
+      const text = used.map((r) => r[0].transcript.trim()).filter(Boolean).join(" ");
+      const final = used.length > 0 && used.every((r) => r.isFinal);
+      textRef.current(text, final);
     };
     rec.onerror = (e: any) => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed")
@@ -79,7 +85,7 @@ export function useDictation(onFinal: (text: string) => void, onInterim?: (text:
       setListening(false);
     };
     rec.onend = () => {
-      interimRef.current?.("");
+      textRef.current("", true);
       setListening(false);
     };
     recRef.current = rec;
